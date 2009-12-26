@@ -1,42 +1,84 @@
 #!/usr/bin/env python
 
 import dbus
+import gobject
+import time
+import sys
+import subprocess
+
+def debug(s):
+	print >> sys.stderr, s
 
 class Monitor():
-	def __init__(self):
-		self.bus = dbus.Bus(dbus.Bus.TYPE_SYSTEM)
-		self.hal_service = self.bus.get_service("org.freedesktop.Hal")
-		self.hal_manager = self.hal_service.get_object("/org/freedesktop/Hal/Manager", "org.freedesktop.Hal.Manager")
+	HAL = "org.freedesktop.Hal"
+	def __init__(self, cmd):
+		print "Command: %s" % (cmd,)
+		self.cmd = cmd
+		self.bus = dbus.SystemBus()
+		self.hal_manager = self.bus.get_object(self.HAL, "/org/freedesktop/Hal/Manager")
+		self.hal_service = dbus.Interface(self.hal_manager, self.HAL + ".Manager")
 
 		self.bus.add_signal_receiver(self.gdl_added,
 			"DeviceAdded",
-			"org.freedesktop.Hal.Manager",
-			"org.freedesktop.Hal",
+			self.HAL + ".Manager",
+			self.HAL,
 			"/org/freedesktop/Hal/Manager")
 
-	def gdl_added(self, dbus_if, dbus_member, dbus_svc, dbus_obj_path, dbus_message):
+		for device_udi in self.hal_service.FindDeviceByCapability("volume"):
+			self.device_added(device_udi)
+
+	def gdl_added(self, device_udi):
 		"""This method is called when a HAL device is added"""
-		[device_udi] = dbus_message.get_args_list()
-		print "\nDeviceAdded, udi=%s"%(device_udi)
+		print "device added: %r" % (device_udi,)
 		self.device_added(device_udi)
 
 	def device_added(self, device_udi):
-		device_udi_obj = self.hal_service.get_object(device_udi, "org.freedesktop.Hal.Device")
-		properties = device_dbus_obj.GetAllProperties()
-		print repr(properties)
-	
+		mount_point = None
+		try:
+			for attempts in range(0,5):
+				device = self.bus.get_object(self.HAL, device_udi)
+				properties = device.GetAllProperties(dbus_interface="org.freedesktop.Hal.Device")
+				if not properties['info.product'] == 'Kindle':
+					debug("'%s' is not 'Kindle' - ignoring" % (properties['info.kindle'],))
+					return
+				if not properties['volume.is_mounted']:
+					if attempts == 4:
+						print >> sys.stderr, "Error: timed out waiting for mount!"
+					time.sleep(1)
+				else:
+					mount_point = properties['volume.mount_point']
+					break
+		except KeyError, e:
+			debug("device has no such key: %s" % (e,))
+			return
 
-def main():
+		print mount_point
+		self.run_command(mount_point)
+	
+	def run_command(self, mount_point):
+		debug("running command: %s" % (self.cmd,))
+		proc = subprocess.Popen(self.cmd + [mount_point])
+
+
+def run(cmd):
 	from dbus.mainloop.glib import DBusGMainLoop
 	DBusGMainLoop(set_as_default=True)
-	monitor = Monitor()
-	import gobject
+	monitor = Monitor(cmd)
 	loop = gobject.MainLoop()
 	try:
 		loop.run()
 	except (KeyboardInterrupt, EOFError):
 		loop.quit()
 
+def main():
+	cmd_parts = sys.argv[1:]
+	if not cmd_parts:
+		print >> sys.stderr, "Usage: %s [-v] <command>"
+		return 1
+	if cmd_parts[0] == '-v':
+		DEBUG = True
+		cmd_parts.pop(0)
+	run(cmd_parts)
+
 if __name__ == '__main__':
-	import sys
 	sys.exit(main())
