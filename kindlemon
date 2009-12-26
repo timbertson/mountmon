@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+
+import dbus
+
+class Monitor():
+	def __init__(self):
+		self.bus = dbus.Bus(dbus.Bus.TYPE_SYSTEM)
+		self.hal_service = self.bus.get_service("org.freedesktop.Hal")
+		self.hal_manager = self.hal_service.get_object("/org/freedesktop/Hal/Manager", "org.freedesktop.Hal.Manager")
+
+		self.bus.add_signal_receiver(self.gdl_added,
+			"DeviceAdded",
+			"org.freedesktop.Hal.Manager",
+			"org.freedesktop.Hal",
+			"/org/freedesktop/Hal/Manager")
+
+	def gdl_added(self, dbus_if, dbus_member, dbus_svc, dbus_obj_path, dbus_message):
+		"""This method is called when a HAL device is added"""
+		[device_udi] = dbus_message.get_args_list()
+		print "\nDeviceAdded, udi=%s"%(device_udi)
+		self.device_added(device_udi)
+
+	def device_added(self, device_udi):
+		device_udi_obj = self.hal_service.get_object(device_udi, "org.freedesktop.Hal.Device")
+		properties = device_dbus_obj.GetAllProperties()
+		print repr(properties)
+	
+
+def main():
+	from dbus.mainloop.glib import DBusGMainLoop
+	DBusGMainLoop(set_as_default=True)
+	monitor = Monitor()
+	import gobject
+	loop = gobject.MainLoop()
+	try:
+		loop.run()
+	except (KeyboardInterrupt, EOFError):
+		loop.quit()
+
+if __name__ == '__main__':
+	import sys
+	sys.exit(main())
