@@ -11,9 +11,10 @@ def debug(s):
 
 class Monitor():
 	HAL = "org.freedesktop.Hal"
-	def __init__(self, cmd):
-		print "Command: %s" % (cmd,)
-		self.cmd = cmd
+	def __init__(self, **kwargs):
+		self.command_mappings = kwargs
+		for item, cmd in self.command_mappings.items():
+			print "for %r: run %s" % (item, cmd)
 		self.bus = dbus.SystemBus()
 		self.hal_manager = self.bus.get_object(self.HAL, "/org/freedesktop/Hal/Manager")
 		self.hal_service = dbus.Interface(self.hal_manager, self.HAL + ".Manager")
@@ -34,16 +35,19 @@ class Monitor():
 
 	def device_added(self, device_udi):
 		mount_point = None
+		device_name = None
 		try:
 			for attempts in range(0,5):
 				device = self.bus.get_object(self.HAL, device_udi)
 				properties = device.GetAllProperties(dbus_interface="org.freedesktop.Hal.Device")
-				if not properties['info.product'] == 'Kindle':
-					debug("'%s' is not 'Kindle' - ignoring" % (properties['info.kindle'],))
+				device_name = properties['info.product']
+				if not device_name in self.command_mappings:
+					debug("'%s' is not in %r - ignoring" % (device_name, self.command_mappings.keys()))
 					return
 				if not properties['volume.is_mounted']:
 					if attempts == 4:
 						print >> sys.stderr, "Error: timed out waiting for mount!"
+						return
 					time.sleep(1)
 				else:
 					mount_point = properties['volume.mount_point']
@@ -53,17 +57,17 @@ class Monitor():
 			return
 
 		print mount_point
-		self.run_command(mount_point)
+		self.run_command(self.command_mappings[device_name], mount_point)
 	
-	def run_command(self, mount_point):
-		debug("running command: %s" % (self.cmd,))
-		proc = subprocess.Popen(self.cmd + [mount_point])
+	def run_command(self, cmd, mount_point):
+		debug("running command: %s" % (cmd,))
+		proc = subprocess.Popen(cmd + [mount_point])
 
 
 def run(cmd):
 	from dbus.mainloop.glib import DBusGMainLoop
 	DBusGMainLoop(set_as_default=True)
-	monitor = Monitor(cmd)
+	monitor = Monitor(Kindle=cmd)
 	loop = gobject.MainLoop()
 	try:
 		loop.run()
