@@ -5,19 +5,22 @@ import gobject
 import time
 import sys
 import subprocess
+import os
 
 import logging
-LOG_FILE = '/tmp/kindlemon.log'
+LOG_FILE = '/tmp/mountmon.log'
 logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG)
 debug = logging.debug
 puts = logging.info
+output = logging.getLogger('subcommand').debug
+
+sys.path.insert(0, os.path.expanduser("~/.config/mountmon"))
+from mountmon_config import mapping
 
 class Monitor():
 	HAL = "org.freedesktop.Hal"
-	def __init__(self, **kwargs):
-		self.command_mappings = kwargs
-		for item, cmd in self.command_mappings.items():
-			puts("for %r: run %s" % (item, cmd))
+	def __init__(self):
+		puts("loaded %s mappings" % (len(mapping),))
 		self.bus = dbus.SystemBus()
 		self.hal_manager = self.bus.get_object(self.HAL, "/org/freedesktop/Hal/Manager")
 		self.hal_service = dbus.Interface(self.hal_manager, self.HAL + ".Manager")
@@ -35,17 +38,26 @@ class Monitor():
 		"""This method is called when a HAL device is added"""
 		puts("device added: %r" % (device_udi,))
 		self.device_added(device_udi)
+	
+	def action_for_device(self, device):
+		for match, action in mapping.items():
+			try:
+				if match(device):
+					return action
+			except StandardError:
+				logging.exception("error matching device")
 
 	def device_added(self, device_udi):
 		mount_point = None
 		device_name = None
+		action = None
 		try:
 			for attempts in range(0,5):
 				device = self.bus.get_object(self.HAL, device_udi)
 				properties = device.GetAllProperties(dbus_interface="org.freedesktop.Hal.Device")
-				device_name = properties['info.product']
-				if not device_name in self.command_mappings:
-					debug("'%s' is not in %r - ignoring" % (device_name, self.command_mappings.keys()))
+				action = self.action_for_device(properties)
+				if not action:
+					debug("'%s' has no action configured - ignoring" % (properties['info.product'],))
 					return
 				if not properties['volume.is_mounted']:
 					if attempts == 4:
@@ -53,29 +65,37 @@ class Monitor():
 						return
 					time.sleep(1)
 				else:
-					mount_point = properties['volume.mount_point']
+					mount_point = str(properties['volume.mount_point'])
 					break
 		except KeyError, e:
 			debug("device has no such key: %s" % (e,))
 			return
 
-		self.run_command(self.command_mappings[device_name], mount_point)
+		command = action(mount_point)
+		if command:
+			self.run_command(command)
 	
-	def run_command(self, cmd, mount_point):
-		debug("running command: %s %s" % (cmd, mount_point))
-		proc = subprocess.Popen(cmd + [mount_point], stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-		retcode = proc.wait()
-		puts("Command `%s` finshed with exit code %s" % (cmd, retcode))
-		_out, _err = proc.stdout.read(), proc.stderr.read()
-		if _out:
-			debug("Command output:\n%s" % (_out,))
-		if _err and retcode != 0:
-			debug("Command ERROR output:\n%s" % (_err,))
+	def run_command(self, cmd):
+		debug("running command: %s" % (cmd,))
+		proc = subprocess.Popen(cmd, stderr = subprocess.PIPE)
+		_out, _err = proc.communicate()
+		retcode = proc.returncode
+		if retcode != 0:
+			puts("Command `%s` finshed with exit code %s" % (cmd, retcode))
+			puts(_err)
 
-def run(cmd):
+
+def get_properties(device_path):
+	"""used for debugging, inspecting attached devices"""
+	bus = dbus.SystemBus()
+	device = bus.get_object('org.freedesktop.Hal', device_path)
+	props = device.GetAllProperties(dbus_interface="org.freedesktop.Hal.Device")
+	return dict(props)
+
+def run():
 	from dbus.mainloop.glib import DBusGMainLoop
 	DBusGMainLoop(set_as_default=True)
-	monitor = Monitor(Kindle=cmd)
+	monitor = Monitor()
 	loop = gobject.MainLoop()
 	try:
 		loop.run()
@@ -84,13 +104,12 @@ def run(cmd):
 
 def main():
 	cmd_parts = sys.argv[1:]
-	if not cmd_parts:
-		print >> sys.stderr, "Usage: %s [-v] <command>" % (sys.argv[0],)
+	if len(cmd_parts) > 1:
+		print >> sys.stderr, "Usage: %s [-v]" % (sys.argv[0],)
 		return 1
-	if cmd_parts[0] == '-v':
+	if cmd_parts == ['-v']:
 		DEBUG = True
-		cmd_parts.pop(0)
-	run(cmd_parts)
+	run()
 
 if __name__ == '__main__':
 	sys.exit(main())
